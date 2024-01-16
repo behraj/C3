@@ -1,0 +1,114 @@
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras.datasets import mnist
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense
+from tensorflow.keras.regularizers import Regularizer
+from tensorflow.keras.optimizers import Adam
+from sklearn.model_selection import KFold
+from tensorflow.keras import backend as K
+(x_train, y_train), (x_test, y_test) = mnist.load_data()
+# Normalize the input data
+x_train = x_train.astype('float32') / 255.0
+x_test = x_test.astype('float32') / 255.0
+# x_train, x_test, y_train, y_test = train_test_split(x_data, y_data, test_size=0.2, random_state=42)
+# Convert the labels to one-hot encoding
+num_classes = 10
+y_train = tf.keras.utils.to_categorical(y_train, num_classes)
+y_test = tf.keras.utils.to_categorical(y_test, num_classes)
+
+# Split the training set into 20 batches
+num_batches = 20
+x_train_batches = np.array_split(x_train, num_batches)
+y_train_batches = np.array_split(y_train, num_batches)
+# Define the Fisher Information computation function
+def compute_fisher(model, x, num_samples=30):
+    f_accum = []
+    for i in range(len(model.weights)):
+        f_accum.append(np.zeros(K.int_shape(model.weights[i])))
+    f_accum = np.array(f_accum)
+    for _ in range(num_samples):
+        idx = np.random.randint(0, x.shape[0])
+        with tf.GradientTape() as tape:
+            model_output = model(x[idx:idx+1])
+        grads = tape.gradient(model_output, model.weights)
+        for i in range(len(grads)):
+            f_accum[i] += tf.square(grads[i])
+    f_accum /= num_samples
+    return f_accum
+
+# Define the CrlB regularizer
+class CrlBRegularizer(Regularizer):
+    def __init__(self, fisher, prior_weights, lambda_=0.1):
+        self.fisher = fisher
+        self.prior_weights = prior_weights
+        self.lambda_ = lambda_
+
+    def __call__(self, x):
+        regularization = 0.
+        for i in range(len(self.fisher)):
+            regularization += self.lambda_ * tf.reduce_sum(self.fisher[i] * tf.square(x - self.prior_weights[i]))
+        return regularization
+
+
+
+# y_train_onehot = y
+# Initialize the list to store test accuracies
+accuracies = []
+
+
+model = Sequential([
+    Flatten(input_shape=(784,)),
+    Dense(128, activation='relu'),
+    Dense(num_classes, activation='softmax')
+])
+
+model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+        # Train the model on each batch
+epochs = 100
+for i in range(num_batches):
+    x_train_batch = x_train_batches[i]
+    y_train_batch = y_train_batches[i]
+
+    model.fit(x_train_batch, y_train_batch, batch_size=128, epochs=epochs, verbose=1)
+    model.save_weights('FashionMNIST_A.h5')
+
+# Compute Fisher Information for Task A
+    with tf.GradientTape() as tape:
+        model_output = model(x_train_batch[:1])
+    grads = tape.gradient(model_output, model.weights)
+    fisher_info = [tf.square(g).numpy() for g in grads]
+
+# Task B: Fashion MNIST with CrlB regularization
+    model_CrlBB = Sequential([
+        Dense(128, activation='relu', input_shape=(784,), kernel_regularizer=CrlBRegularizer(fisher_info[0], model.weights[0])),
+        Dense(num_classes, activation='softmax', kernel_regularizer=CrlBRegularizer(fisher_info[1], model.weights[1]))
+    ])
+    with tf.device('/device:GPU:0'):  # Specify the GPU device to use
+        model_CrlBB = model_CrlBB
+        model_CrlBB.compile(optimizer=Adam(), loss='categorical_crossentropy', metrics=['accuracy'])
+        model_CrlBB.load_weights('FashionMNIST_A.h5')
+        model_CrlBB.fit( x_train_batch, y_train_batch, batch_size=128,epochs=epochs,  validation_data=(x_test, y_test))
+
+# Evaluate performance
+    A_original_acc = 100 * model.evaluate(x_test, y_test)[1]
+    B_CrlB_acc = 100 * model_CrlBB.evaluate(x_test, y_test)[1]
+# Train the model on each batch
+
+
+
+# Evaluate the model on the test set
+    _, test_accuracy = model.evaluate(x_test, y_test)
+    print("Test Accuracy:", test_accuracy)
+
+    print("Task A Original Accuracy: %.2f%%" % A_original_acc)
+    print("Task B CrlB method Accuracy: %.2f%%" % B_CrlB_acc)
+
+
+    # Append the test accuracy of Task B to accuracies list
+    accuracies.append(test_accuracy)
+
+# Print the fold accuracies
+for i, score in enumerate(accuracies):
+    percent = score * 100
+    print("Fold-{}: {:.2f}%".format(i+1, percent))
